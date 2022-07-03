@@ -5,7 +5,6 @@ import Set
 import Array
 
 type Expression = Ident String
-                | Type String
                 | Bool Bool
                 | Number Float
                 | Char Char
@@ -16,8 +15,12 @@ type Expression = Ident String
                 | Tuple (List (Located Expression))
                 | Unit
 
-type Statement = Declaration (Located Expression) String (Located Expression)
-               | TypeDefinition String (Located Expression)
+type Statement = Declaration (Located TypeLiteral) String (Located Expression)
+               | TypeDefinition String (Located TypeLiteral)
+
+type TypeLiteral = TypeIdent String
+                 | TypeInfix String (Located TypeLiteral) (Located TypeLiteral)
+                 | TypePrefix String (Located TypeLiteral)
 
 keywords : Set.Set String
 keywords = Set.fromList ["true", "false"]
@@ -51,9 +54,6 @@ parseTypeString = variable
     , inner = \c -> Char.isAlphaNum c || c == '_'
     , reserved = keywords
     }
-
-parseType : Parser (Located Expression)
-parseType = map Type parseTypeString |> located
 
 parseBool : Parser (Located Expression)
 parseBool = oneOf 
@@ -127,9 +127,8 @@ parseTuple = succeed Tuple
                   _ -> expr)
 
 literal : Parser (Located Expression)
-literal = oneOf [parseIdent, parseType, parseBool, parseNumber, parseChar, parseString, parseTuple]
+literal = oneOf [parseIdent, parseBool, parseNumber, parseChar, parseString, parseTuple]
 
-isSymbol : Char -> Bool
 isSymbol s = case s of
     '+' -> True
     '-' -> True
@@ -169,9 +168,6 @@ compoundExpr lit = loop lit (\left
             |. ws
     )
 
-parenthetical : Parser a -> Parser a
-parenthetical p = succeed identity |. token "(" |= p |. token ")"
-
 expression : Parser (Located Expression)
 expression = succeed identity
           |. ws
@@ -181,7 +177,7 @@ expression = succeed identity
 
 parseDeclaration : Parser (Located Statement)
 parseDeclaration = succeed Declaration
-                |= expression
+                |= parseType
                 |= parseIdentString
                 |. ws
                 |. token "="
@@ -195,8 +191,34 @@ parseTypeDef = succeed TypeDefinition
             |. ws
             |= parseTypeString
             |. ws
-            |= expression
+            |= parseType
             |> located
+
+
+parseTypeName : Parser (Located TypeLiteral)
+parseTypeName = map TypeIdent parseTypeString |> located
+
+typeLit : Parser (Located TypeLiteral)
+typeLit = oneOf [parseTypeName]
+
+compoundType lit = loop lit (\left
+        -> succeed identity
+        |= oneOf 
+            [ chompIf isSymbol
+                |. chompWhile isSymbol
+                |> getChompedString
+                |> andThen (\op->succeed (TypeInfix op left) |= parseType |> located)
+                |> map Loop
+            , succeed left
+                |> map Done
+            ])
+        |. ws
+
+parseType = succeed identity
+         |. ws
+         |= typeLit
+         |. ws
+         |> andThen compoundType
 
 parse : Parser (List (Located Statement))
 parse = sequence
