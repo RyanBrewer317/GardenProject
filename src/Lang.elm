@@ -12,6 +12,7 @@ type Expression = Ident String
                 | String String
                 | Infix String (Located Expression) (Located Expression)
                 | Prefix String (Located Expression)
+                | Call (Located Expression) (Located Expression)
 
 keywords : Set.Set String
 keywords = Set.fromList ["true", "false"]
@@ -84,12 +85,12 @@ parseString = succeed String
                             [ map (\_->"\n") (token "n")
                             , map (\_->"\t") (token "t")
                             , map (\_->"\r") (token "r")
-                            , map (\_->"\"") (token "\"")
+                            -- , map (\_->"\"") (token "\"")
                             , chompIf (\_->True) |> getChompedString
                             ]
                     , token "\""
                         |> map (\_->Done (String.join "" (List.reverse revChunks)))
-                    , chompWhile (\c->c/='"'||c/='\\')
+                    , chompWhile (\c->c/='"'&&c/='\\')
                         |> getChompedString
                         |> map (\chunk->Loop(chunk::revChunks))
                     ]
@@ -116,17 +117,34 @@ isSymbol s = case s of
     '|' -> True
     _ -> False
 
+ws : Parser ()
+ws = chompWhile (\c -> c == ' ' || c == '\n' || c == '\r' || c == '\t') |> getChompedString |> map (\_->())
+
 compoundExpr : Located Expression -> Parser (Located Expression)
-compoundExpr lit = loop lit (\left -> 
-            oneOf 
-                [ chompWhile isSymbol 
+compoundExpr lit = loop lit (\left 
+            -> succeed identity
+            |= oneOf 
+                [ chompIf isSymbol 
+                    |. chompWhile isSymbol 
                     |> getChompedString 
                     |> andThen (\op-> succeed (Infix op left) |= expression |> located)
+                    |> map Loop
+                , parenthetical expression
+                    |> map (Call lit)
+                    |> located
                     |> map Loop
                 , succeed left
                     |> map Done
                 ]
+            |. ws
     )
 
+parenthetical : Parser a -> Parser a
+parenthetical p = succeed identity |. token "(" |= p |. token ")"
+
 expression : Parser (Located Expression)
-expression = literal |> andThen compoundExpr
+expression = succeed identity
+          |. ws
+          |= oneOf [parenthetical (lazy (\_->expression)), literal] 
+          |. ws
+          |> andThen compoundExpr
