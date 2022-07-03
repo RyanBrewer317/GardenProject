@@ -13,6 +13,11 @@ type Expression = Ident String
                 | Infix String (Located Expression) (Located Expression)
                 | Prefix String (Located Expression)
                 | Call (Located Expression) (Located Expression)
+                | Tuple (List (Located Expression))
+                | Unit
+
+type Statement = Declaration (Located Expression) String (Located Expression)
+               | TypeDefinition String (Located Expression)
 
 keywords : Set.Set String
 keywords = Set.fromList ["true", "false"]
@@ -30,19 +35,25 @@ located parser =
     |= parser
     |= getPosition
 
-parseIdent : Parser (Located Expression)
-parseIdent = map Ident (variable
+parseIdentString : Parser String
+parseIdentString = variable
     { start = Char.isLower
     , inner = \c -> Char.isAlphaNum c || c == '_'
     , reserved = keywords
-    }) |> located
+    }
 
-parseType : Parser (Located Expression)
-parseType = map Type (variable
+parseIdent : Parser (Located Expression)
+parseIdent = map Ident parseIdentString |> located
+
+parseTypeString : Parser String
+parseTypeString = variable
     { start = Char.isUpper
     , inner = \c -> Char.isAlphaNum c || c == '_'
     , reserved = keywords
-    }) |> located
+    }
+
+parseType : Parser (Located Expression)
+parseType = map Type parseTypeString |> located
 
 parseBool : Parser (Located Expression)
 parseBool = oneOf 
@@ -96,8 +107,27 @@ parseString = succeed String
                     ]
             ) |> located
 
+parseTuple : Parser (Located Expression)
+parseTuple = succeed Tuple
+          |= sequence
+            { start = "("
+            , item = expression
+            , separator = ","
+            , end = ")"
+            , spaces = ws
+            , trailing = Forbidden
+            }
+          |> located
+          |> map (\expr->
+            case expr of
+              { value } -> 
+                case value of
+                  Tuple [x] -> x
+                  Tuple [] -> { expr | value = Unit}
+                  _ -> expr)
+
 literal : Parser (Located Expression)
-literal = oneOf [parseIdent, parseType, parseBool, parseNumber, parseChar, parseString]
+literal = oneOf [parseIdent, parseType, parseBool, parseNumber, parseChar, parseString, parseTuple]
 
 isSymbol : Char -> Bool
 isSymbol s = case s of
@@ -129,7 +159,7 @@ compoundExpr lit = loop lit (\left
                     |> getChompedString 
                     |> andThen (\op-> succeed (Infix op left) |= expression |> located)
                     |> map Loop
-                , parenthetical expression
+                , parseTuple
                     |> map (Call lit)
                     |> located
                     |> map Loop
@@ -145,6 +175,35 @@ parenthetical p = succeed identity |. token "(" |= p |. token ")"
 expression : Parser (Located Expression)
 expression = succeed identity
           |. ws
-          |= oneOf [parenthetical (lazy (\_->expression)), literal] 
+          |= lazy (\_->literal)
           |. ws
           |> andThen compoundExpr
+
+parseDeclaration : Parser (Located Statement)
+parseDeclaration = succeed Declaration
+                |= expression
+                |= parseIdentString
+                |. ws
+                |. token "="
+                |. ws
+                |= expression
+                |> located
+
+parseTypeDef : Parser (Located Statement)
+parseTypeDef = succeed TypeDefinition
+            |. backtrackable (keyword "typedef")
+            |. ws
+            |= parseTypeString
+            |. ws
+            |= expression
+            |> located
+
+parse : Parser (List (Located Statement))
+parse = sequence
+        { start = ""
+        , item = oneOf [parseDeclaration, parseTypeDef]
+        , separator = ";"
+        , end = ""
+        , spaces = ws
+        , trailing = Mandatory
+        }
