@@ -129,22 +129,30 @@ parseTuple = succeed Tuple
 literal : Parser (Located Expression)
 literal = oneOf [parseIdent, parseBool, parseNumber, parseChar, parseString, parseTuple]
 
-isSymbol s = case s of
-    '+' -> True
-    '-' -> True
-    '/' -> True
-    '*' -> True
-    '^' -> True
-    '%' -> True
-    '?' -> True
-    ':' -> True
-    '=' -> True
-    '>' -> True
-    '<' -> True
-    '!' -> True
-    '&' -> True
-    '|' -> True
-    _ -> False
+parseInfixOp = List.map backtrackable (List.map symbol 
+    [ "=>"
+    , "<="
+    , ">="
+    , "|>"
+    , "<|"
+    ]
+    |> (++) (List.map symbol
+    [ "+"
+    , "-"
+    , "*"
+    , "/"
+    , "^"
+    , "%"
+    , "<"
+    , ">"
+    , "=="
+    , "!="
+    , "&&"
+    , "||"
+    ]))
+    |> oneOf
+
+parsePrefixOp = List.map symbol ["!", "-"] |> oneOf
 
 ws : Parser ()
 ws = chompWhile (\c -> c == ' ' || c == '\n' || c == '\r' || c == '\t') |> getChompedString |> map (\_->())
@@ -153,9 +161,7 @@ compoundExpr : Located Expression -> Parser (Located Expression)
 compoundExpr lit = loop lit (\left 
             -> succeed identity
             |= oneOf 
-                [ chompIf isSymbol 
-                    |. chompWhile isSymbol 
-                    |> getChompedString 
+                [ parseInfixOp
                     |> andThen (\op-> succeed (Infix op left) |= expression |> located)
                     |> map Loop
                 , parseTuple
@@ -171,7 +177,11 @@ compoundExpr lit = loop lit (\left
 expression : Parser (Located Expression)
 expression = succeed identity
           |. ws
-          |= lazy (\_->literal)
+          |= oneOf 
+            [ parsePrefixOp
+                |> andThen (\op->succeed (Prefix op) |= literal |> located)
+            , lazy (\_->literal)
+            ]
           |. ws
           |> andThen compoundExpr
 
@@ -204,9 +214,7 @@ typeLit = oneOf [parseTypeName]
 compoundType lit = loop lit (\left
         -> succeed identity
         |= oneOf 
-            [ chompIf isSymbol
-                |. chompWhile isSymbol
-                |> getChompedString
+            [ parseInfixOp
                 |> andThen (\op->succeed (TypeInfix op left) |= parseType |> located)
                 |> map Loop
             , succeed left
@@ -216,7 +224,12 @@ compoundType lit = loop lit (\left
 
 parseType = succeed identity
          |. ws
-         |= typeLit
+         |= oneOf 
+            [ symbol "[]"
+                |> getChompedString
+                |> andThen (\op->succeed (TypePrefix op) |= typeLit |> located)
+            , typeLit
+            ]
          |. ws
          |> andThen compoundType
 
