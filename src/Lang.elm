@@ -129,14 +129,21 @@ parseTuple = succeed Tuple
 literal : Parser (Located Expression)
 literal = oneOf [parseIdent, parseBool, parseNumber, parseChar, parseString, parseTuple]
 
-parseInfixOp = List.map backtrackable (List.map symbol 
+chompSymbol s = String.toList s
+             |> List.map (\c->chompIf (\x->x==c))
+             |> (\l -> case l of
+                x::xs -> List.foldr (|.) x xs
+                [] -> succeed ())
+             |> getChompedString
+
+parseInfixOp = List.map backtrackable (List.map chompSymbol
     [ "=>"
     , "<="
     , ">="
     , "|>"
     , "<|"
     ]
-    |> (++) (List.map symbol
+    |> (++) (List.map chompSymbol
     [ "+"
     , "-"
     , "*"
@@ -152,7 +159,7 @@ parseInfixOp = List.map backtrackable (List.map symbol
     ]))
     |> oneOf
 
-parsePrefixOp = List.map symbol ["!", "-"] |> oneOf
+parsePrefixOp = List.map chompSymbol ["!", "-"] |> oneOf
 
 ws : Parser ()
 ws = chompWhile (\c -> c == ' ' || c == '\n' || c == '\r' || c == '\t') |> getChompedString |> map (\_->())
