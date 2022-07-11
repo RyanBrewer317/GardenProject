@@ -7,7 +7,7 @@ import Typecheck exposing (typeOf)
 import Lang exposing (parse)
 import Typecheck exposing (typecheck)
 import FTV
-import Typecheck exposing (Type(..))
+import Typecheck exposing (Type(..), Scope)
 import Parser exposing (..)
 import Typecheck exposing (debugTypeToString)
 
@@ -39,8 +39,6 @@ problemToString p =
    Problem s -> "problem " ++ s 
    BadRepeat -> "bad repeat" 
 
-type alias Scope = Dict.Dict String (Located Expr)
-
 startingScope : Dict.Dict String Type
 startingScope = Dict.fromList 
     [ ("+", TFunc (TTuple [TNum, TNum]) TNum)
@@ -65,8 +63,12 @@ startingScope = Dict.fromList
     , ("len", Forall [TVar "a"] (TFunc (ADT "Array" [TVar "a"]) TNum))
     ]
 
-go : String -> Result String (FTV.FTV ())
-go code = Parser.run parse code |> Result.mapError (\_->"parser error") |> Result.andThen (\ok->typecheck startingScope (FTV.return ok))
+go : String -> String
+go code = Parser.run (succeed identity |= parse |. end) code |> Result.mapError deadEndsToString |> Result.andThen (\ast->
+          typecheck startingScope (FTV.return ast)           |> Result.map (\ftvScope->
+          let scope = Dict.diff (FTV.unwrap ftvScope) startingScope in
+          let parts = List.map(\(k, a)->k ++ ": " ++ debugTypeToString a) (Dict.toList scope) in
+          String.join ", " parts)) |> Result.withDefault ""
 
 typ : String -> Result String String
 typ code = Parser.run (succeed identity |= expression |. end) code |> Result.mapError deadEndsToString |> Result.andThen (\ok->typeOf startingScope (FTV.return ok)) |> Result.map FTV.unwrap |> Result.map debugTypeToString

@@ -2,7 +2,6 @@ module Typecheck exposing (..)
 import Lang exposing (..)
 import Dict
 import FTV
-import Html exposing (th)
 
 type Type = TBool
           | TNum
@@ -364,9 +363,9 @@ typecheckStmt : Scope -> FTV.FTV Stmt -> Result String (Scope, FTV.FTV Type)
 typecheckStmt scope ftvstmt = case FTV.unwrap ftvstmt of
     Declaration _ locx  -> letTypeOf scope (FTV.pass ftvstmt locx)
 
-typecheck : Scope -> FTV.FTV (List (Located Stmt)) -> Result String (FTV.FTV ())
+typecheck : Scope -> FTV.FTV (List (Located Stmt)) -> Result String (FTV.FTV Scope)
 typecheck scope ast = case FTV.unwrap ast of
-    [] -> Ok (FTV.pass ast ())
+    [] -> Ok (FTV.pass ast scope)
     stmt::rest -> Result.andThen (\(scope2, ftvt)->
         case stmt.value of
             Declaration n _ -> typecheck (Dict.insert n (FTV.unwrap ftvt) scope2) (FTV.pass ftvt rest)
