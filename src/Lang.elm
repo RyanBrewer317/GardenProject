@@ -4,26 +4,24 @@ import Parser exposing (..)
 import Set
 import Array
 
-type Expression = Ident String
-                | Bool Bool
-                | Number Float
-                | Char Char
-                | String String
-                | Infix String (Located Expression) (Located Expression)
-                | Prefix String (Located Expression)
-                | Call (Located Expression) (Located Expression)
-                | Tuple (List (Located Expression))
-                | Unit
+-- type TypeLit = TNumLit | TBoolLit | TFuncLit TypeLit TypeLit
 
-type Statement = Declaration (Located TypeLiteral) String (Located Expression)
-               | TypeDefinition String (Located TypeLiteral)
+type Expr = Ident String 
+          | Call (Located Expr) (Located Expr)
+          | Function (List String) (Located Expr)
+          | If (Located Expr) (Located Expr) (Located Expr)
+          | NumberLit Float
+          | BoolLit Bool
+          | CharLit Char
+          | StringLit String
+          | Tuple (List (Located Expr))
+          | Prefix String (Located Expr)
+          | Infix (Located Expr) String (Located Expr)
 
-type TypeLiteral = TypeIdent String
-                 | TypeInfix String (Located TypeLiteral) (Located TypeLiteral)
-                 | TypePrefix String (Located TypeLiteral)
+type Stmt = Declaration String (Located Expr)
 
 keywords : Set.Set String
-keywords = Set.fromList ["true", "false"]
+keywords = Set.fromList ["true", "false", "if", "else", "then"]
 
 type alias Located a =
   { start : (Int, Int)
@@ -45,26 +43,82 @@ parseIdentString = variable
     , reserved = keywords
     }
 
-parseIdent : Parser (Located Expression)
+-- simplyTypedArg : Parser (String, TypeLit)
+-- simplyTypedArg = succeed Tuple.pair
+--               |= variable
+--                 { start = Char.isLower
+--                 , inner = \c -> Char.isAlphaNum c || c == '_'
+--                 , reserved = keywords
+--                 }
+--               |. ws
+--               |. symbol ":"
+--               |. ws
+--               |= parseType
+
+-- parseTypeLit : Parser TypeLit
+-- parseTypeLit = oneOf [keyword "Num" |> map (\_->TNumLit), keyword "Bool" |> map (\_->TBoolLit)]
+
+-- parseType : Parser TypeLit
+-- parseType = oneOf [succeed identity |. symbol "(" |= lazy (\_->parseType) |. symbol ")", parseTypeLit |> andThen (\t->oneOf [succeed (TFuncLit t) |. symbol "->" |= lazy (\_->parseType), succeed t])]
+
+parseIdent : Parser (Located Expr)
 parseIdent = map Ident parseIdentString |> located
 
-parseTypeString : Parser String
-parseTypeString = variable
-    { start = Char.isUpper
-    , inner = \c -> Char.isAlphaNum c || c == '_'
-    , reserved = keywords
-    }
-
-parseBool : Parser (Located Expression)
+parseBool : Parser (Located Expr)
 parseBool = oneOf 
-    [ keyword "true"  |> map (\_ -> Bool True )
-    , keyword "false" |> map (\_ -> Bool False)
+    [ keyword "true"  |> map (\_ -> BoolLit True )
+    , keyword "false" |> map (\_ -> BoolLit False)
     ] |> located
 
-parseNumber : Parser (Located Expression)
-parseNumber = map Number float |> located
+parseNumber : Parser (Located Expr)
+parseNumber = map NumberLit float |> located
 
-parseChar : Parser (Located Expression)
+parseIf : Parser (Located Expr)
+parseIf = succeed If
+       |. keyword "if"
+       |. ws
+       |. symbol "("
+       |= expression
+       |. symbol ")"
+       |= expression
+       |. keyword "else"
+       |= expression
+       |> located
+
+parseFunction : Parser (Located Expr)
+parseFunction = succeed Function
+             |= sequence
+                { start = "\\"
+                , separator = ","
+                , end = "->"
+                , spaces = ws
+                , item = parseIdentString
+                , trailing = Forbidden
+                }
+             |= expression
+             |> located
+
+literal : Parser (Located Expr)
+literal = oneOf [parseIdent, parseBool, parseChar, parseString, parseNumber, parseTuple, parseIf, parseFunction]
+
+compoundExpr : Located Expr -> Parser (Located Expr)
+compoundExpr lit = loop lit (\left 
+            -> succeed identity
+            |= oneOf 
+                [ parseInfixOp
+                    |> andThen (\op-> succeed (Infix left op) |= expression |> located)
+                    |> map Loop
+                , parseTuple
+                    |> map (Call lit)
+                    |> located
+                    |> map Loop
+                , succeed left
+                    |> map Done
+                ]
+            |. ws
+    )
+
+parseChar : Parser (Located Expr)
 parseChar = (token "'"
          |. oneOf [token "\\" |. chompIf (\_->True), chompIf (\_->True)]
          |. token "'")
@@ -82,11 +136,11 @@ parseChar = (token "'"
                         Nothing -> 'r'
                 else 
                     Maybe.withDefault 'r' (Array.get 0 a))
-         |> map Char
+         |> map CharLit
          |> located
 
-parseString : Parser (Located Expression)
-parseString = succeed String
+parseString : Parser (Located Expr)
+parseString = succeed StringLit
             |. token "\""
             |= loop [] (\revChunks->
                 oneOf 
@@ -107,7 +161,7 @@ parseString = succeed String
                     ]
             ) |> located
 
-parseTuple : Parser (Located Expression)
+parseTuple : Parser (Located Expr)
 parseTuple = succeed Tuple
           |= sequence
             { start = "("
@@ -118,70 +172,60 @@ parseTuple = succeed Tuple
             , trailing = Forbidden
             }
           |> located
-          |> map (\expr->
-            case expr of
-              { value } -> 
-                case value of
+          |> map (
+            \expr -> case expr of
+              { value } -> case value of
                   Tuple [x] -> x
-                  Tuple [] -> { expr | value = Unit}
-                  _ -> expr)
+                  _ -> expr
+          )
 
-literal : Parser (Located Expression)
-literal = oneOf [parseIdent, parseBool, parseNumber, parseChar, parseString, parseTuple]
-
+chompSymbol : String -> Parser String
 chompSymbol s = String.toList s
-             |> List.map (\c->chompIf (\x->x==c))
-             |> (\l -> case l of
-                x::xs -> List.foldr (|.) x xs
-                [] -> succeed ())
-             |> getChompedString
+            |> List.map (\c->chompIf (\x->x==c))
+            |> (\l -> 
+                case l of
+                    x::xs -> List.foldr (|.) x xs
+                    [] -> succeed ())
+            |> getChompedString
 
-parseInfixOp = List.map backtrackable (List.map chompSymbol
-    [ "=>"
-    , "<="
-    , ">="
-    , "|>"
-    , "<|"
+parseInfixOp : Parser String
+parseInfixOp = oneOf 
+    [ chompSymbol "=" |> andThen (\c->oneOf 
+        [ chompSymbol ">" 
+        , chompSymbol "="
+        ] |> andThen (\d->succeed (c++d)))
+    , chompSymbol "<" |> andThen (\c->oneOf
+        [ chompSymbol "="
+        , chompSymbol "|"
+        , succeed ""
+        ] |> andThen (\d->succeed (c++d)))
+    , chompSymbol ">" |> andThen (\c->oneOf 
+        [ chompSymbol "="
+        , succeed ""
+        ] |> andThen (\d->succeed (c++d)))
+    , chompSymbol "|" |> andThen (\c->oneOf 
+        [ chompSymbol ">"
+        , chompSymbol "|"
+        ] |> andThen (\d->succeed (c++d)))
+    , chompSymbol "+" |> andThen (\c->oneOf 
+        [ chompSymbol "+"
+        , succeed ""
+        ] |> andThen (\d->succeed (c++d)))
+    , chompSymbol "-"
+    , chompSymbol "*"
+    , chompSymbol "/"
+    , chompSymbol "^"
+    , chompSymbol "%"
+    , chompSymbol "!="
+    , chompSymbol "&&"
     ]
-    |> (++) (List.map chompSymbol
-    [ "+"
-    , "-"
-    , "*"
-    , "/"
-    , "^"
-    , "%"
-    , "<"
-    , ">"
-    , "=="
-    , "!="
-    , "&&"
-    , "||"
-    ]))
-    |> oneOf
 
 parsePrefixOp = List.map chompSymbol ["!", "-"] |> oneOf
 
 ws : Parser ()
 ws = chompWhile (\c -> c == ' ' || c == '\n' || c == '\r' || c == '\t') |> getChompedString |> map (\_->())
 
-compoundExpr : Located Expression -> Parser (Located Expression)
-compoundExpr lit = loop lit (\left 
-            -> succeed identity
-            |= oneOf 
-                [ parseInfixOp
-                    |> andThen (\op-> succeed (Infix op left) |= expression |> located)
-                    |> map Loop
-                , parseTuple
-                    |> map (Call lit)
-                    |> located
-                    |> map Loop
-                , succeed left
-                    |> map Done
-                ]
-            |. ws
-    )
-
-expression : Parser (Located Expression)
+expression : Parser (Located Expr)
 expression = succeed identity
           |. ws
           |= oneOf 
@@ -192,9 +236,8 @@ expression = succeed identity
           |. ws
           |> andThen compoundExpr
 
-parseDeclaration : Parser (Located Statement)
+parseDeclaration : Parser (Located Stmt)
 parseDeclaration = succeed Declaration
-                |= parseType
                 |= parseIdentString
                 |. ws
                 |. token "="
@@ -202,48 +245,63 @@ parseDeclaration = succeed Declaration
                 |= expression
                 |> located
 
-parseTypeDef : Parser (Located Statement)
-parseTypeDef = succeed TypeDefinition
-            |. backtrackable (keyword "typedef")
-            |. ws
-            |= parseTypeString
-            |. ws
-            |= parseType
-            |> located
+-- parseTypeDef : Parser (Located Statement)
+-- parseTypeDef = succeed TypeDefinition
+--             |. backtrackable (keyword "typedef")
+--             |. ws
+--             |= parseTypeString
+--             |. ws
+--             |= parseType
+--             |> located
 
 
-parseTypeName : Parser (Located TypeLiteral)
-parseTypeName = map TypeIdent parseTypeString |> located
+-- parseTypeName : Parser (Located TypeLiteral)
+-- parseTypeName = map TypeIdent parseTypeString |> located
 
-typeLit : Parser (Located TypeLiteral)
-typeLit = oneOf [parseTypeName]
+-- parseProductType : Parser (Located TypeLiteral)
+-- parseProductType = succeed ProductType
+--                 |= sequence
+--                     { start = "("
+--                     , separator = ","
+--                     , end = ")"
+--                     , spaces = ws
+--                     , item = lazy (\_->parseType)
+--                     , trailing = Forbidden
+--                     }
+--                 |> located
 
-compoundType lit = loop lit (\left
-        -> succeed identity
-        |= oneOf 
-            [ parseInfixOp
-                |> andThen (\op->succeed (TypeInfix op left) |= parseType |> located)
-                |> map Loop
-            , succeed left
-                |> map Done
-            ])
-        |. ws
+-- typeLit : Parser (Located TypeLiteral)
+-- typeLit = oneOf [parseTypeName, parseProductType]
 
-parseType = succeed identity
-         |. ws
-         |= oneOf 
-            [ symbol "[]"
-                |> getChompedString
-                |> andThen (\op->succeed (TypePrefix op) |= typeLit |> located)
-            , typeLit
-            ]
-         |. ws
-         |> andThen compoundType
+-- compoundType lit = loop lit (\left
+--         -> succeed identity
+--         |= oneOf 
+--             [ succeed (GenericType left)
+--                 |= sequence 
+--                 { start = "<"
+--                 , separator = ","
+--                 , end = ">"
+--                 , spaces = ws
+--                 , item = parseType
+--                 , trailing = Forbidden
+--                 }
+--                 |> located
+--                 |> map Loop
+--             , succeed left
+--                 |> map Done
+--             ])
+--         |. ws
 
-parse : Parser (List (Located Statement))
+-- parseType = succeed identity
+--          |. ws
+--          |= typeLit
+--          |. ws
+--          |> andThen compoundType
+
+parse : Parser (List (Located Stmt))
 parse = sequence
         { start = ""
-        , item = oneOf [parseDeclaration, parseTypeDef]
+        , item = oneOf [parseDeclaration{-, parseTypeDef-}]
         , separator = ";"
         , end = ""
         , spaces = ws
