@@ -17,6 +17,7 @@ type Expr = Ident String
           | Tuple (List (Located Expr))
           | Prefix String (Located Expr)
           | Infix (Located Expr) String (Located Expr)
+          | ArrayLit (List (Located Expr))
 
 type Stmt = Declaration String (Located Expr)
 
@@ -99,7 +100,7 @@ parseFunction = succeed Function
              |> located
 
 literal : Parser (Located Expr)
-literal = oneOf [parseIdent, parseBool, parseChar, parseString, parseNumber, parseTuple, parseIf, parseFunction]
+literal = oneOf [parseIdent, parseBool, parseChar, parseString, parseNumber, parseTuple, parseIf, parseFunction, parseArray]
 
 compoundExpr : Located Expr -> Parser (Located Expr)
 compoundExpr lit = loop lit (\left 
@@ -180,13 +181,7 @@ parseTuple = succeed Tuple
           )
 
 chompSymbol : String -> Parser String
-chompSymbol s = String.toList s
-            |> List.map (\c->chompIf (\x->x==c))
-            |> (\l -> 
-                case l of
-                    x::xs -> List.foldr (|.) x xs
-                    [] -> succeed ())
-            |> getChompedString
+chompSymbol s = symbol s |> map (\_->s)
 
 parseInfixOp : Parser String
 parseInfixOp = oneOf 
@@ -220,10 +215,23 @@ parseInfixOp = oneOf
     , chompSymbol "&&"
     ]
 
+parsePrefixOp : Parser String
 parsePrefixOp = List.map chompSymbol ["!", "-"] |> oneOf
 
 ws : Parser ()
 ws = chompWhile (\c -> c == ' ' || c == '\n' || c == '\r' || c == '\t') |> getChompedString |> map (\_->())
+
+parseArray : Parser (Located Expr)
+parseArray = succeed ArrayLit
+        |= sequence
+            { start = "["
+            , separator = ","
+            , end = "]"
+            , spaces = ws
+            , item = expression
+            , trailing = Forbidden
+            }
+        |> located
 
 expression : Parser (Located Expr)
 expression = succeed identity

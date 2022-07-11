@@ -2,6 +2,7 @@ module Typecheck exposing (..)
 import Lang exposing (..)
 import Dict
 import FTV
+import Html exposing (th)
 
 type Type = TBool
           | TNum
@@ -11,6 +12,7 @@ type Type = TBool
           | TTuple (List Type)
           | TVar String
           | Forall (List Type) Type
+          | ADT String (List Type)
 
 -- evalTypeLit : TypeLit -> Type
 -- evalTypeLit t = case t of
@@ -31,6 +33,7 @@ typeToString t = case t of
     TFunc u v -> typeToString u ++ "->" ++ typeToString v
     TTuple ts -> "(" ++ String.join ", " (ts |> List.map typeToString) ++ ")"
     TVar n -> n
+    ADT n ts -> n ++ "<" ++ String.join ", " (ts |> List.map typeToString) ++ ">"
     Forall vars u -> case vars of
         [] -> typeToString u
         _ -> 
@@ -144,6 +147,42 @@ typecheckExpr scope ftvExpr = case (FTV.unwrap ftvExpr).value of
                     )
                 ) ftvRightType
                 |> FTV.unwrap))
+    Prefix op right ->
+        case Dict.get op scope of
+            Nothing -> Err <| nameErr (FTV.unwrap ftvExpr) op
+            Just typ ->
+                let t = (case op of
+                        "-" -> Forall [TVar "a"] (TFunc TNum TNum)
+                        _ -> typ) in
+                let ftvOpType = instantiate(FTV.pass ftvExpr t) in
+                typecheckExpr scope (FTV.pass ftvOpType right) |> Result.map (\(ftvRightType, rightConstraints)->
+                FTV.withFresh(\ftv v->
+                    let expr = FTV.unwrap ftvExpr in
+                    let exprType = TVar v in
+                    let ftvExprType = FTV.pass ftv exprType in
+                    let opType = FTV.unwrap ftvOpType in
+                    let rightType = FTV.unwrap ftvRightType in
+                    FTV.pass ftv
+                    ( ftvExprType
+                    , locmap expr (Equation opType (TFunc rightType exprType))::
+                      rightConstraints
+                    )
+                ) ftvRightType
+                |> FTV.unwrap)
+    ArrayLit exprs -> 
+        FTV.withFresh (\ftv v->
+            let res = List.foldr (\a b -> 
+                    b                                            |> Result.andThen (\(ftvInnerTyp, prevTypes, prevConstraints)->
+                    typecheckExpr scope (FTV.pass ftvInnerTyp a) |> Result.map     (\(ftvType, typeConstraints)->
+                    (ftvInnerTyp, (FTV.unwrap ftvType)::prevTypes, locmap a (Equation (FTV.unwrap ftvInnerTyp) (FTV.unwrap ftvType))::typeConstraints++prevConstraints)))) (Ok (FTV.pass ftv (TVar v), [], [])) (List.reverse exprs)
+            in
+            res |> Result.map(\(ftvInnerType, types, constraints)->
+            let exprType = ADT "Array" [FTV.unwrap ftvInnerType] in
+            let ftvExprType = FTV.pass ftv exprType in
+            ( ftvExprType
+            , constraints
+            )) |> FTV.pass ftv
+        ) ftvExpr |> FTV.unwrap
     _ -> Err ""
 
 typeOf : Scope -> FTV.FTV (Located Expr) -> Result String (FTV.FTV Type)
@@ -164,7 +203,7 @@ solve constraints substitutions skipped = case constraints of
     loc::rest -> case loc.value of
         Equation t1 t2 ->
             let continue = \_->solve rest substitutions (loc::skipped) in
-            let err = \_->typeErr loc <| typeToString t1 ++ " can't equal " ++ typeToString t2 in
+            let err = \_->typeErr loc <| debugTypeToString t1 ++ " can't equal " ++ debugTypeToString t2 in
             let removeAndContinue = \_->solve rest substitutions skipped in
             let handleVarIsolationAndContinue = \v->solve (substituteAll rest t2 t1) (Subst v t1::substitutions) (substituteAll skipped t2 t1) in
             if t1 == t2 then
@@ -186,6 +225,19 @@ solve constraints substitutions skipped = case constraints of
                                 err()
                             else
                                 solve ((List.map2 (\l r->locmap loc (Equation l r)) ts ts2)++rest) substitutions skipped
+                        TVar x ->
+                            if occurs t2 t1 then
+                                continue()
+                            else
+                                solve (substituteAll rest t2 t1) (Subst x t1::substitutions) (substituteAll skipped t2 t1)
+                        _ -> err()
+                ADT n ts ->
+                    case t2 of
+                        ADT n2 ts2 ->
+                            if n /= n2 || List.length ts /= List.length ts2 then
+                                err()
+                            else
+                                solve ((List.map2 (\l r ->locmap loc (Equation l r)) ts ts2)++rest) substitutions skipped
                         TVar x ->
                             if occurs t2 t1 then
                                 continue()
@@ -238,6 +290,7 @@ sub var val t = case t of
     TString -> t
     TFunc a b -> TFunc (sub var val a) (sub var val b)
     TTuple ts -> TTuple (List.map (sub var val) ts)
+    ADT n ts -> ADT n (List.map (sub var val) ts)
     Forall vars u -> Forall vars (sub var val u)
 
 occurs : Type -> Type -> Bool
@@ -249,6 +302,7 @@ occurs var t = case t of
     TString -> False
     TFunc a b -> occurs var a && occurs var b
     TTuple ts -> List.any (occurs var) ts
+    ADT _ ts -> List.any (occurs var) ts
     Forall vars u -> List.any (\v->v==var) vars || occurs var u
 
 instantiate : FTV.FTV Type -> FTV.FTV Type
@@ -263,6 +317,7 @@ instantiate ftvt = case FTV.unwrap ftvt of
             FTV.pass ftvb (TFunc (FTV.unwrap ftva) (FTV.unwrap ftvb))
     TTuple ts -> FTV.fmap TTuple <| List.foldr (\t ftvts-> instantiate (FTV.pass ftvts t) |> FTV.fmap (\newt->newt::FTV.unwrap ftvts)) (FTV.pass ftvt []) ts
     TVar _ -> ftvt
+    ADT n ts -> FTV.fmap (ADT n) <| List.foldr (\t ftvts-> instantiate (FTV.pass ftvts t) |> FTV.fmap (\newt->newt::FTV.unwrap ftvts)) (FTV.pass ftvt []) ts
     Forall vars u -> List.foldr (\var ftvtype->FTV.flipbind (\typ->FTV.withFresh (\ftv v->FTV.pass ftv <| sub var (TVar v) typ) ftvtype) ftvtype) (FTV.pass ftvt u) vars
 
 generalize : Scope -> Type -> Type -> Type
@@ -285,6 +340,7 @@ generalize scope t scheme =
                     let set = List.foldr (\item l->if List.member item l then l else item :: l) [] (vars++varsA++varsB) in
                     Forall set typ
                 TTuple ts -> List.foldr (\u schem-> generalize scope u schem) scheme ts
+                ADT _ ts -> List.foldr (\u schem-> generalize scope u schem) scheme ts
                 Forall _ _ -> t
         _ -> Forall [] t -- this shouldn't happen...
 

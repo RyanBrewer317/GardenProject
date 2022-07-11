@@ -4,7 +4,6 @@ import Dict
 import Parser
 import Lang exposing (expression)
 import Typecheck exposing (typeOf)
-import Typecheck exposing (typeToString)
 import Lang exposing (parse)
 import Typecheck exposing (typecheck)
 import FTV
@@ -56,12 +55,14 @@ startingScope = Dict.fromList
     , ("=>", TFunc (TTuple [TBool, TBool]) TBool)
     , ("==", Forall [TVar "a"] (TFunc (TTuple [TVar "a", TVar "a"]) TBool))
     , ("!=", Forall [TVar "a"] (TFunc (TTuple [TVar "a", TVar "a"]) TBool))
-    , ("<=", TFunc (TTuple [TNum, TNum]) TNum)
-    , (">=", TFunc (TTuple [TNum, TNum]) TNum)
-    , ("<",  TFunc (TTuple [TNum, TNum]) TNum)
-    , (">",  TFunc (TTuple [TNum, TNum]) TNum)
+    , ("<=", TFunc (TTuple [TNum, TNum]) TBool)
+    , (">=", TFunc (TTuple [TNum, TNum]) TBool)
+    , ("<",  TFunc (TTuple [TNum, TNum]) TBool)
+    , (">",  TFunc (TTuple [TNum, TNum]) TBool)
     , ("|>", Forall [TVar "a", TVar "b"] (TFunc (TTuple [TVar "a", TFunc (TVar "a") (TVar "b")]) (TVar "b")))
     , ("<|", Forall [TVar "a", TVar "b"] (TFunc (TTuple [TFunc (TVar "a") (TVar "b"), TVar "a"]) (TVar "b")))
+    , ("!", TFunc TBool TBool)
+    , ("len", Forall [TVar "a"] (TFunc (ADT "Array" [TVar "a"]) TNum))
     ]
 
 go : String -> Result String (FTV.FTV ())
