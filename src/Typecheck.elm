@@ -182,6 +182,21 @@ typecheckExpr scope ftvExpr = case (FTV.unwrap ftvExpr).value of
             , constraints
             )) |> FTV.pass ftv
         ) ftvExpr |> FTV.unwrap
+    Index coll idx -> 
+        typecheckExpr scope (FTV.pass ftvExpr coll)     |> Result.andThen (\(ftvCollType, collConstraints)->
+        typecheckExpr scope (FTV.pass ftvCollType idx ) |> Result.map (\(ftvIdxType , idxConstraints )->
+        FTV.withFresh(\ftv v->
+            let exprType = TVar v in
+            let ftvExprType = FTV.pass ftv exprType in
+            let collType = FTV.unwrap ftvCollType in
+            let idxType  = FTV.unwrap ftvIdxType in
+            FTV.pass ftv
+            ( ftvExprType
+            , locmap coll (Equation collType (ADT "Array" [exprType]))::
+              locmap idx  (Equation idxType  TNum)::
+              collConstraints++idxConstraints
+            )
+        ) ftvIdxType |> FTV.unwrap))
     _ -> Err ""
 
 typeOf : Scope -> FTV.FTV (Located Expr) -> Result String (FTV.FTV Type)

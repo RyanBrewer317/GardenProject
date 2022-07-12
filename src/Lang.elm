@@ -18,6 +18,7 @@ type Expr = Ident String
           | Prefix String (Located Expr)
           | Infix (Located Expr) String (Located Expr)
           | ArrayLit (List (Located Expr))
+          | Index (Located Expr) (Located Expr)
 
 type Stmt = Declaration String (Located Expr)
 
@@ -111,6 +112,12 @@ compoundExpr lit = loop lit (\left
                     |> map Loop
                 , parseTuple
                     |> map (Call lit)
+                    |> located
+                    |> map Loop
+                , succeed (Index lit)
+                    |. symbol "["
+                    |= expression
+                    |. symbol "]"
                     |> located
                     |> map Loop
                 , succeed left
