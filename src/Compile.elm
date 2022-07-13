@@ -1,15 +1,9 @@
 module Compile exposing (..)
-import Lang exposing (Expr(..), Located)
+import Lang exposing (..)
 import Dict
-import Parser
-import Lang exposing (expression)
-import Typecheck exposing (typeOf)
-import Lang exposing (parse)
-import Typecheck exposing (typecheck)
+import Typecheck exposing (..)
 import FTV
-import Typecheck exposing (Type(..), Scope)
 import Parser exposing (..)
-import Typecheck exposing (debugTypeToString)
 
 deadEndsToString : List DeadEnd -> String
 deadEndsToString deadEnds =
@@ -63,12 +57,9 @@ startingScope = Dict.fromList
     , ("len", Forall [TVar "a"] (TFunc (ADT "Array" [TVar "a"]) TNum))
     ]
 
-go : String -> String
+go : String -> Result String String
 go code = Parser.run (succeed identity |= parse |. end) code |> Result.mapError deadEndsToString |> Result.andThen (\ast->
-          typecheck startingScope (FTV.return ast)           |> Result.map (\ftvScope->
-          let scope = Dict.diff (FTV.unwrap ftvScope) startingScope in
-          let parts = List.map(\(k, a)->k ++ ": " ++ debugTypeToString a) (Dict.toList scope) in
-          String.join ", " parts)) |> Result.withDefault ""
-
-typ : String -> Result String String
-typ code = Parser.run (succeed identity |= expression |. end) code |> Result.mapError deadEndsToString |> Result.andThen (\ok->typeOf startingScope (FTV.return ok)) |> Result.map FTV.unwrap |> Result.map debugTypeToString
+          typecheck startingScope FTV.init ast []        |> Result.map (\(scope, _, annotAst)->
+          let scope2 = Dict.diff scope startingScope in
+          let parts = List.map(\(k, a)->k ++ ": " ++ typeToString a) (Dict.toList scope2) in
+          String.join ", " parts ++ " -- " ++ Debug.toString annotAst))
