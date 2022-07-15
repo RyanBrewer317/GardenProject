@@ -2,8 +2,9 @@ module Compile exposing (..)
 import Lang exposing (..)
 import Dict
 import Typecheck exposing (..)
-import FTV
+import NameGen
 import Parser exposing (..)
+import CPS
 
 deadEndsToString : List DeadEnd -> String
 deadEndsToString deadEnds =
@@ -59,7 +60,8 @@ startingScope = Dict.fromList
 
 go : String -> Result String String
 go code = Parser.run (succeed identity |= parse |. end) code |> Result.mapError deadEndsToString |> Result.andThen (\ast->
-          typecheck startingScope FTV.init ast []        |> Result.map (\(scope, _, annotAst)->
+          typecheck startingScope NameGen.init ast []        |> Result.map (\(scope, _, annotAst)->
           let scope2 = Dict.diff scope startingScope in
           let parts = List.map(\(k, a)->k ++ ": " ++ typeToString a) (Dict.toList scope2) in
-          String.join ", " parts ++ " -- " ++ Debug.toString annotAst))
+          let cps = CPS.toCPS annotAst in
+          String.join ", " parts ++ " -- " ++ Debug.toString cps))

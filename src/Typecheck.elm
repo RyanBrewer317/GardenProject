@@ -1,7 +1,7 @@
 module Typecheck exposing (..)
 import Lang exposing (..)
 import Dict
-import FTV
+import NameGen exposing (NameGen)
 
 type Type = TBool
           | TNum
@@ -13,17 +13,17 @@ type Type = TBool
           | Forall (List Type) Type
           | ADT String (List Type)
 
-type Annot = AnnotPrim   {val : (Located Expr), typ : Type}
-           | AnnotFunc   {args : (List (String, Type)), block : Annot, typ : Type}
-           | AnnotCall   {func : Annot, args : Annot, typ : Type}
-           | AnnotIf     {cond : Annot, cons : Annot, alt : Annot, typ : Type}
-           | AnnotTuple  {vals : (List Annot), typ : Type}
-           | AnnotArray  {vals : (List Annot), typ : Type}
-           | AnnotPrefix {op : String, right : Annot, typ : Type}
-           | AnnotInfix  {left : Annot, op : String, right : Annot, typ : Type}
-           | AnnotIndex  {coll : Annot, idx : Annot, typ : Type}
+type Annot = AnnotPrim   {val : Expr, typ : Type}
+           | AnnotFunc   {args : (List (String, Type)), block : Located Annot, typ : Type}
+           | AnnotCall   {func : Located Annot, args : Located Annot, typ : Type}
+           | AnnotIf     {cond : Located Annot, cons : Located Annot, alt : Located Annot, typ : Type}
+           | AnnotTuple  {vals : (List (Located Annot)), typ : Type}
+           | AnnotArray  {vals : (List (Located Annot)), typ : Type}
+           | AnnotPrefix {op : String, right : Located Annot, typ : Type}
+           | AnnotInfix  {left : Located Annot, op : String, right : Located Annot, typ : Type}
+           | AnnotIndex  {coll : Located Annot, idx : Located Annot, typ : Type}
 
-type AnnotStmt = AnnotDecl String Annot
+type AnnotStmt = AnnotDecl String (Located Annot)
 
 -- evalTypeLit : TypeLit -> Type
 -- evalTypeLit t = case t of
@@ -80,81 +80,81 @@ locmap : Located a -> b -> Located b
 locmap loc constraint = case loc of
     {start, end} -> {start=start, value=constraint, end=end}
 
-typecheckExpr : Scope -> FTV.FTV -> Located Expr -> Result String (FTV.FTV, Annot, List (Located Constraint))
-typecheckExpr scope ftv loc = 
+typecheckExpr : Scope -> NameGen -> Located Expr -> Result String (NameGen, Located Annot, List (Located Constraint))
+typecheckExpr scope gen loc = 
     case loc.value of
         Ident n -> case Dict.get n scope of
-            Just t -> instantiate ftv t |> (\(ftv2, t2)->Ok (ftv2, AnnotPrim {val=loc, typ=t2}, []))
+            Just t -> instantiate gen t |> (\(gen2, t2)->Ok (gen2, AnnotPrim {val=loc.value, typ=t2} |> locmap loc, []))
             Nothing -> Err <| nameErr loc n
         Function args body ->
-            let (ftv2, argTypes) = List.foldr (\ident (ftvx, argsSoFar) -> FTV.withFresh(\ftvx2 v-> (ftvx2, ((ident, TVar v)::argsSoFar))) ftvx) (ftv, []) args in 
+            let (gen2, argTypes) = List.foldr (\ident (genx, argsSoFar) -> NameGen.withFresh(\genx2 v-> (genx2, ((ident, TVar v)::argsSoFar))) genx) (gen, []) args in 
             let newScope = Dict.union (Dict.fromList (argTypes)) scope in
-            typecheckExpr newScope ftv2 body
-            |> Result.map (\(ftv3, bodyAnnot, bodyConstraints)->
+            typecheckExpr newScope gen2 body
+            |> Result.map (\(gen3, bodyAnnotLoc, bodyConstraints)->
                 let argsType = argsToType argTypes in
-                let bodyType = typeOf bodyAnnot in
+                let bodyType = typeOf bodyAnnotLoc.value in
                 let exprType = TFunc argsType bodyType in
-                ( ftv3
-                , AnnotFunc {args=argTypes, block=bodyAnnot, typ=exprType}
+                ( gen3
+                , AnnotFunc {args=argTypes, block=bodyAnnotLoc, typ=exprType} |> locmap loc
                 , bodyConstraints)
             )
         Call foo bar -> 
-            typecheckExpr scope ftv foo |> Result.andThen (\(ftv2, fooAnnot, fooConstraints)->
-            typecheckExpr scope ftv2 bar
-            |> Result.map (\(ftv3, barAnnot, barConstraints)->
-                FTV.withFresh (\ftv4 v-> 
+            typecheckExpr scope gen foo |> Result.andThen (\(gen2, fooAnnotLoc, fooConstraints)->
+            typecheckExpr scope gen2 bar
+            |> Result.map (\(gen3, barAnnotLoc, barConstraints)->
+                NameGen.withFresh (\gen4 v-> 
                     let exprType = TVar v in
-                    let fooType = typeOf fooAnnot in
-                    let barType = typeOf barAnnot in
-                    ( ftv4
-                    , (AnnotCall {func=fooAnnot, args=barAnnot, typ=exprType}
+                    let fooType = typeOf fooAnnotLoc.value in
+                    let barType = typeOf barAnnotLoc.value in
+                    ( gen4
+                    , (AnnotCall {func=fooAnnotLoc, args=barAnnotLoc, typ=exprType} |> locmap loc
                     , locmap loc (Equation fooType (TFunc barType exprType))::
                       fooConstraints++barConstraints
                     ))
-                ) ftv3
-                |> (\(ftv4, (annCall, consts))->(ftv4, annCall, consts))
+                ) gen3
+                |> (\(gen4, (annCall, consts))->(gen4, annCall, consts))
             ))
-        BoolLit _ -> Ok (ftv, AnnotPrim {val=loc, typ=TBool}, [])
-        NumberLit _ -> Ok (ftv, AnnotPrim {val=loc, typ=TNum}, [])
+        BoolLit _ -> Ok (gen, AnnotPrim {val=loc.value, typ=TBool} |> locmap loc, [])
+        NumberLit _ -> Ok (gen, AnnotPrim {val=loc.value, typ=TNum} |> locmap loc, [])
         If cond cons alt ->
-            typecheckExpr scope ftv cond |> Result.andThen (\(ftv2, condAnnot, condConstraints)->
-            typecheckExpr scope ftv2 cons |> Result.andThen (\(ftv3, consAnnot, consConstraints)->
-            typecheckExpr scope ftv3 alt  |> Result.map     (\(ftv4, altAnnot , altConstraints )->
-            FTV.withFresh(\ftv5 v->
+            typecheckExpr scope gen cond |> Result.andThen (\(gen2, condAnnotLoc, condConstraints)->
+            typecheckExpr scope gen2 cons |> Result.andThen (\(gen3, consAnnotLoc, consConstraints)->
+            typecheckExpr scope gen3 alt  |> Result.map     (\(gen4, altAnnotLoc , altConstraints )->
+            NameGen.withFresh(\gen5 v->
                 let exprType = TVar v in
-                let condType = typeOf condAnnot in
-                let consType = typeOf consAnnot in
-                let altType  = typeOf altAnnot in
-                ( ftv5
-                , ( AnnotIf {cond=condAnnot, cons=consAnnot, alt=altAnnot, typ=exprType}
+                let condType = typeOf condAnnotLoc.value in
+                let consType = typeOf consAnnotLoc.value in
+                let altType  = typeOf altAnnotLoc.value in
+                ( gen5
+                , ( AnnotIf {cond=condAnnotLoc, cons=consAnnotLoc, alt=altAnnotLoc, typ=exprType} |> locmap loc
                   , locmap cond (Equation condType TBool   ) ::
                     locmap cons (Equation consType exprType) ::
                     locmap alt  (Equation altType  exprType) ::
                     condConstraints++consConstraints++altConstraints
                 ))
-            ) ftv4 
-            |> (\(ftv5, (annIf, ifConsts))->(ftv5, annIf, ifConsts)))))
-        CharLit _ -> Ok (ftv, AnnotPrim {val=loc, typ=TChar}, [])
-        StringLit _ -> Ok (ftv, AnnotPrim {val=loc, typ=TString}, [])
+            ) gen4 
+            |> (\(gen5, (annIf, ifConsts))->(gen5, annIf, ifConsts)))))
+        CharLit _ -> Ok (gen, AnnotPrim {val=loc.value, typ=TChar} |> locmap loc, [])
+        StringLit _ -> Ok (gen, AnnotPrim {val=loc.value, typ=TString} |> locmap loc, [])
         Infix left op right ->
             case Dict.get op scope of
                 Nothing -> Err <| nameErr loc op
                 Just t -> 
-                    let (ftv2, opType) = instantiate ftv t in
-                    typecheckExpr scope ftv2 left  |> Result.andThen (\(ftv3, leftAnnot , leftConstraints )->
-                    typecheckExpr scope ftv3 right |> Result.map     (\(ftv4, rightAnnot, rightConstraints)->
-                    FTV.withFresh(\ftv5 v->
+                    let (gen2, opType) = instantiate gen t in
+                    typecheckExpr scope gen2 left  |> Result.andThen (\(gen3, leftAnnotLoc , leftConstraints )->
+                    typecheckExpr scope gen3 right |> Result.map     (\(gen4, rightAnnotLoc, rightConstraints)->
+                    NameGen.withFresh(\gen5 v->
                         let exprType = TVar v in
-                        let rightType = typeOf rightAnnot in
-                        let leftType  = typeOf leftAnnot in
-                        ( ftv5
-                        , ( AnnotInfix {right=rightAnnot, op=op, left=leftAnnot, typ=exprType}
+                        let rightType = typeOf rightAnnotLoc.value in
+                        let leftType  = typeOf leftAnnotLoc.value in
+                        ( gen5
+                        , ( AnnotInfix {right=rightAnnotLoc, op=op, left=leftAnnotLoc, typ=exprType} |> locmap loc
                           , locmap loc (Equation opType (TFunc (TTuple [leftType, rightType]) exprType)) ::
                             leftConstraints++rightConstraints
                           )
                         )
-                    ) ftv4
-                    |> (\(ftv5, (annInfix, consts))->(ftv5, annInfix, consts))))
+                    ) gen4
+                    |> (\(gen5, (annInfix, consts))->(gen5, annInfix, consts))))
         Prefix op right ->
             case Dict.get op scope of
                 Nothing -> Err <| nameErr loc op
@@ -162,52 +162,52 @@ typecheckExpr scope ftv loc =
                     let t = (case op of
                             "-" -> Forall [TVar "a"] (TFunc TNum TNum)
                             _ -> typ) in
-                    let (ftv2, opType) = instantiate ftv t in
-                    typecheckExpr scope ftv2 right |> Result.map (\(ftv3, rightAnnot, rightConstraints)->
-                    FTV.withFresh(\ftv4 v->
+                    let (gen2, opType) = instantiate gen t in
+                    typecheckExpr scope gen2 right |> Result.map (\(gen3, rightAnnotLoc, rightConstraints)->
+                    NameGen.withFresh(\gen4 v->
                         let exprType = TVar v in
-                        let rightType = typeOf rightAnnot in
-                        ( ftv4
-                        , ( AnnotPrefix {op=op, right=rightAnnot, typ=exprType}
+                        let rightType = typeOf rightAnnotLoc.value in
+                        ( gen4
+                        , ( AnnotPrefix {op=op, right=rightAnnotLoc, typ=exprType} |> locmap loc
                           , locmap loc (Equation opType (TFunc rightType exprType))::
                             rightConstraints
                           )
                         )
-                    ) ftv3
-                    |> (\(ftv4, (annPrefix, consts))->(ftv4, annPrefix, consts)))
+                    ) gen3
+                    |> (\(gen4, (annPrefix, consts))->(gen4, annPrefix, consts)))
         ArrayLit exprs -> 
-            FTV.withFresh (\ftv2 v->
+            NameGen.withFresh (\gen2 v->
                 let res = List.foldr (\expr r -> 
-                        r                             |> Result.andThen (\{ftvx, innerType, annots, constraints}->
-                        typecheckExpr scope ftvx expr |> Result.map     (\(ftvx2, annot, typeConstraints)->
-                        {ftvx=ftvx2, innerType=innerType, annots=annot::annots, constraints=locmap expr (Equation innerType (typeOf annot))::typeConstraints++constraints}))) (Ok {ftvx=ftv2, innerType=TVar v, annots=[], constraints=[]}) (List.reverse exprs)
+                        r                             |> Result.andThen (\{genx, innerType, annotLocs, constraints}->
+                        typecheckExpr scope genx expr |> Result.map     (\(genx2, annotLoc, typeConstraints)->
+                        {genx=genx2, innerType=innerType, annotLocs=annotLoc::annotLocs, constraints=locmap expr (Equation innerType (typeOf annotLoc.value))::typeConstraints++constraints}))) (Ok {genx=gen2, innerType=TVar v, annotLocs=[], constraints=[]}) (List.reverse exprs)
                 in
-                (ftv, res |> Result.map(\{ftvx, innerType, annots, constraints}->
+                (gen, res |> Result.map(\{genx, innerType, annotLocs, constraints}->
                 let exprType = ADT "Array" [innerType] in
-                ( ftvx
-                , ( AnnotArray {vals=annots, typ=exprType}
+                ( genx
+                , ( AnnotArray {vals=annotLocs, typ=exprType} |> locmap loc
                   , constraints
                   )
                 )
                 )
-            )) ftv 
-            |> Tuple.second |> Result.map (\(ftv2, (annArr, consts))->(ftv2, annArr, consts))
+            )) gen 
+            |> Tuple.second |> Result.map (\(gen2, (annArr, consts))->(gen2, annArr, consts))
         Index coll idx -> 
-            typecheckExpr scope ftv coll |> Result.andThen (\(ftv2, collAnnot, collConstraints)->
-            typecheckExpr scope ftv2 idx |> Result.map     (\(ftv3, idxAnnot , idxConstraints )->
-            FTV.withFresh(\ftv4 v->
+            typecheckExpr scope gen coll |> Result.andThen (\(gen2, collAnnotLoc, collConstraints)->
+            typecheckExpr scope gen2 idx |> Result.map     (\(gen3, idxAnnotLoc , idxConstraints )->
+            NameGen.withFresh(\gen4 v->
                 let exprType = TVar v in
-                let collType = typeOf collAnnot in
-                let idxType  = typeOf idxAnnot in
-                ( ftv4
-                , ( AnnotIndex {coll=collAnnot, idx=idxAnnot, typ=exprType}
+                let collType = typeOf collAnnotLoc.value in
+                let idxType  = typeOf idxAnnotLoc.value in
+                ( gen4
+                , ( AnnotIndex {coll=collAnnotLoc, idx=idxAnnotLoc, typ=exprType} |> locmap loc
                   , locmap coll (Equation collType (ADT "Array" [exprType]))::
                     locmap idx  (Equation idxType  TNum)::
                     collConstraints++idxConstraints
                   )
                 )
-            ) ftv3 
-            |> (\(ftv4, (annIndex, consts))->(ftv4, annIndex, consts))))
+            ) gen3 
+            |> (\(gen4, (annIndex, consts))->(gen4, annIndex, consts))))
         _ -> Err ""
 
 typeOf : Annot -> Type
@@ -222,37 +222,37 @@ typeOf a = case a of
     AnnotInfix  {typ} -> typ
     AnnotIndex  {typ} -> typ
 
-updateType : (Type -> Type) -> Annot -> Annot
-updateType f a = case a of
-    AnnotPrim   {val, typ} -> AnnotPrim {val=val, typ=f typ}
-    AnnotFunc   {args, block, typ} -> AnnotFunc {args=args, block=block, typ=f typ}
-    AnnotCall   {func, args, typ} -> AnnotCall {func=func, args=args, typ=f typ}
-    AnnotIf     {cond, cons, alt, typ} -> AnnotIf {cond=cond, cons=cons, alt=alt, typ=f typ}
-    AnnotTuple  {vals, typ} -> AnnotTuple {vals=vals, typ=f typ}
-    AnnotArray  {vals, typ} -> AnnotArray {vals=vals, typ=f typ}
-    AnnotPrefix {op, right, typ} -> AnnotPrefix {op=op, right=right, typ=f typ}
-    AnnotInfix  {left, op, right, typ} -> AnnotInfix {left=left, op=op, right=right, typ=f typ}
-    AnnotIndex  {coll, idx, typ} -> AnnotIndex {coll=coll, idx=idx, typ=f typ}
+updateType : (Type -> Type) -> Located Annot -> Located Annot
+updateType f loc = case loc.value of
+    AnnotPrim   {val, typ} -> {loc | value=AnnotPrim {val=val, typ=f typ}}
+    AnnotFunc   {args, block, typ} -> {loc | value=AnnotFunc {args=args, block=block, typ=f typ}}
+    AnnotCall   {func, args, typ} -> {loc | value=AnnotCall {func=func, args=args, typ=f typ}}
+    AnnotIf     {cond, cons, alt, typ} -> {loc | value=AnnotIf {cond=cond, cons=cons, alt=alt, typ=f typ}}
+    AnnotTuple  {vals, typ} -> {loc | value=AnnotTuple {vals=vals, typ=f typ}}
+    AnnotArray  {vals, typ} -> {loc | value=AnnotArray {vals=vals, typ=f typ}}
+    AnnotPrefix {op, right, typ} -> {loc | value=AnnotPrefix {op=op, right=right, typ=f typ}}
+    AnnotInfix  {left, op, right, typ} -> {loc | value=AnnotInfix {left=left, op=op, right=right, typ=f typ}}
+    AnnotIndex  {coll, idx, typ} -> {loc | value=AnnotIndex {coll=coll, idx=idx, typ=f typ}}
 
-updateTypes : (Type -> Type) -> Annot -> Annot
-updateTypes f a = case a of
-    AnnotPrim   {val, typ} -> AnnotPrim {val=val, typ=f typ}
-    AnnotFunc   {args, block, typ} -> AnnotFunc {args=args, block=updateTypes f block, typ=f typ}
-    AnnotCall   {func, args, typ} -> AnnotCall {func=updateTypes f func, args=updateTypes f args, typ=f typ}
-    AnnotIf     {cond, cons, alt, typ} -> AnnotIf {cond=updateTypes f cond, cons=updateTypes f cons, alt=updateTypes f alt, typ=f typ}
-    AnnotTuple  {vals, typ} -> AnnotTuple {vals=List.map (updateTypes f) vals, typ=f typ}
-    AnnotArray  {vals, typ} -> AnnotArray {vals=List.map (updateTypes f) vals, typ=f typ}
-    AnnotPrefix {op, right, typ} -> AnnotPrefix {op=op, right=updateTypes f right, typ=f typ}
-    AnnotInfix  {left, op, right, typ} -> AnnotInfix {left=updateTypes f left, op=op, right=updateTypes f right, typ=f typ}
-    AnnotIndex  {coll, idx, typ} -> AnnotIndex {coll=updateTypes f coll, idx=updateTypes f idx, typ=f typ}
+updateTypes : (Type -> Type) -> Located Annot -> Located Annot
+updateTypes f loc = case loc.value of
+    AnnotPrim   {val, typ} -> {loc | value=AnnotPrim {val=val, typ=f typ}}
+    AnnotFunc   {args, block, typ} -> {loc | value=AnnotFunc {args=args, block=updateTypes f block, typ=f typ}}
+    AnnotCall   {func, args, typ} -> {loc | value=AnnotCall {func=updateTypes f func, args=updateTypes f args, typ=f typ}}
+    AnnotIf     {cond, cons, alt, typ} -> {loc | value=AnnotIf {cond=updateTypes f cond, cons=updateTypes f cons, alt=updateTypes f alt, typ=f typ}}
+    AnnotTuple  {vals, typ} -> {loc | value=AnnotTuple {vals=List.map (updateTypes f) vals, typ=f typ}}
+    AnnotArray  {vals, typ} -> {loc | value=AnnotArray {vals=List.map (updateTypes f) vals, typ=f typ}}
+    AnnotPrefix {op, right, typ} -> {loc | value=AnnotPrefix {op=op, right=updateTypes f right, typ=f typ}}
+    AnnotInfix  {left, op, right, typ} -> {loc | value=AnnotInfix {left=updateTypes f left, op=op, right=updateTypes f right, typ=f typ}}
+    AnnotIndex  {coll, idx, typ} -> {loc | value=AnnotIndex {coll=updateTypes f coll, idx=updateTypes f idx, typ=f typ}}
 
--- typeOf : Scope -> FTV.FTV (Located Expr) -> Result String (FTV.FTV Type)
--- typeOf scope ftvexpr = typecheckExpr scope ftvexpr |> Result.andThen (\(ftvt, constraints)->
+-- typeOf : Scope -> NameGen (Located Expr) -> Result String (NameGen Type)
+-- typeOf scope genexpr = typecheckExpr scope genexpr |> Result.andThen (\(gent, constraints)->
 --                     solve constraints [] [] |> Result.map (\substitutions->
---                     List.foldr (\(Subst t1 t2) ftvb->FTV.fmap(sub (TVar t1) t2) ftvb) ftvt substitutions))
+--                     List.foldr (\(Subst t1 t2) genb->NameGen.fmap(sub (TVar t1) t2) genb) gent substitutions))
 
-letTypeOf : Scope -> FTV.FTV -> Located Expr -> Result String (Scope, FTV.FTV, Annot)
-letTypeOf scope ftv expr = typecheckExpr scope ftv expr |> Result.andThen (\(ftv2, annot, constraints)->preGeneralize scope constraints annot|>Result.map(\(s, a)->(s, ftv2, a)))
+letTypeOf : Scope -> NameGen -> Located Expr -> Result String (Scope, NameGen, Located Annot)
+letTypeOf scope gen expr = typecheckExpr scope gen expr |> Result.andThen (\(gen2, annotLoc, constraints)->preGeneralize scope constraints annotLoc|>Result.map(\(s, a)->(s, gen2, a)))
 
 type Subst = Subst String Type
 
@@ -367,20 +367,20 @@ occurs var t = case t of
     ADT _ ts -> List.any (occurs var) ts
     Forall vars u -> List.any (\v->v==var) vars || occurs var u
 
-instantiate : FTV.FTV  -> Type -> (FTV.FTV, Type)
-instantiate ftv t = case t of
-    TBool -> (ftv, t)
-    TNum -> (ftv, t)
-    TChar -> (ftv, t)
-    TString -> (ftv, t)
+instantiate : NameGen  -> Type -> (NameGen, Type)
+instantiate gen t = case t of
+    TBool -> (gen, t)
+    TNum -> (gen, t)
+    TChar -> (gen, t)
+    TString -> (gen, t)
     TFunc a b -> 
-        let (ftv2, a2) = instantiate ftv a in 
-        let (ftv3, b2) = instantiate ftv2 b in
-            (ftv3, (TFunc a2 b2))
-    TTuple ts -> Tuple.mapSecond TTuple <| List.foldr (\typ (ftvx, types)-> instantiate ftvx typ |> Tuple.mapSecond (\newt->newt::types)) (ftv, []) ts
-    TVar _ -> (ftv, t)
-    ADT n ts -> Tuple.mapSecond (ADT n) <| List.foldr (\typ (ftvx, types)-> instantiate ftvx typ |> Tuple.mapSecond (\newt->newt::types)) (ftv, []) ts
-    Forall vars u -> List.foldr (\var (ftvx, typ)->FTV.withFresh (\ftvx2 v->(ftvx2, sub var (TVar v) typ)) ftvx) (ftv, u) vars
+        let (gen2, a2) = instantiate gen a in 
+        let (gen3, b2) = instantiate gen2 b in
+            (gen3, (TFunc a2 b2))
+    TTuple ts -> Tuple.mapSecond TTuple <| List.foldr (\typ (genx, types)-> instantiate genx typ |> Tuple.mapSecond (\newt->newt::types)) (gen, []) ts
+    TVar _ -> (gen, t)
+    ADT n ts -> Tuple.mapSecond (ADT n) <| List.foldr (\typ (genx, types)-> instantiate genx typ |> Tuple.mapSecond (\newt->newt::types)) (gen, []) ts
+    Forall vars u -> List.foldr (\var (genx, typ)->NameGen.withFresh (\genx2 v->(genx2, sub var (TVar v) typ)) genx) (gen, u) vars
 
 generalize : Scope -> Type -> Type -> Type
 generalize scope t scheme =
@@ -411,28 +411,28 @@ schemeFrom t = case t of
     Forall vars u -> Just (vars, u)
     _ -> Nothing
 
-preGeneralize : Scope -> List (Located Constraint) -> Annot -> Result String (Scope, Annot)
-preGeneralize scope constraints annot = 
+preGeneralize : Scope -> List (Located Constraint) -> Located Annot -> Result String (Scope, Located Annot)
+preGeneralize scope constraints annotLoc = 
     solve constraints [] [] |> Result.map(\substitutions->
     let env = List.foldr (\(Subst x u) scop->Dict.map (\_ v->sub (TVar x) u v) scop) scope substitutions in
-    let annot2 = List.foldr (\(Subst x u) annotx->updateTypes (\t->sub (TVar x) u t) annotx) annot substitutions in 
+    let annot2 = List.foldr (\(Subst x u) annotx->updateTypes (\t->sub (TVar x) u t) annotx) annotLoc substitutions in 
     let scheme = updateType (\t->generalize scope t (Forall [] t)) annot2 in
     (env, scheme))
 
 occursInScope : Scope -> String -> Bool
 occursInScope scope var = Dict.toList scope |> List.any (\(_, t)->occurs (TVar var) t)
 
-typecheckStmt : Scope -> FTV.FTV -> Stmt -> Result String (Scope, FTV.FTV, AnnotStmt)
-typecheckStmt scope ftv stmt = case stmt of
-    Declaration n locx  -> letTypeOf scope ftv locx |> Result.map (\(s, ftv2, a)->(s, ftv2, AnnotDecl n a))
+typecheckStmt : Scope -> NameGen -> Stmt -> Result String (Scope, NameGen, AnnotStmt)
+typecheckStmt scope gen stmt = case stmt of
+    Declaration n locx  -> letTypeOf scope gen locx |> Result.map (\(s, gen2, a)->(s, gen2, AnnotDecl n a))
 
-typecheck : Scope -> FTV.FTV -> List (Located Stmt) -> List AnnotStmt -> Result String (Scope, FTV.FTV, List AnnotStmt)
-typecheck scope ftv ast sofar = case ast of
-    [] -> Ok (scope, ftv, List.reverse sofar)
-    stmt::rest -> typecheckStmt scope ftv stmt.value |> Result.andThen (\(scope2, ftv2, annot)->
+typecheck : Scope -> NameGen -> List (Located Stmt) -> List (Located AnnotStmt) -> Result String (Scope, NameGen, List (Located AnnotStmt))
+typecheck scope gen ast sofar = case ast of
+    [] -> Ok (scope, gen, List.reverse sofar)
+    stmt::rest -> typecheckStmt scope gen stmt.value |> Result.andThen (\(scope2, gen2, annot)->
         case stmt.value of
             Declaration n _ -> 
                 case annot of
-                    AnnotDecl _ a -> typecheck (Dict.insert n (typeOf a) scope2) ftv2 rest (annot :: sofar)
+                    AnnotDecl _ a -> typecheck (Dict.insert n (typeOf a.value) scope2) gen2 rest ((locmap stmt annot) :: sofar)
             --_ -> typecheck scope rest
         )
