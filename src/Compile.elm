@@ -5,6 +5,7 @@ import Typecheck exposing (..)
 import NameGen
 import Parser exposing (..)
 import CPS
+import Refine
 
 deadEndsToString : List DeadEnd -> String
 deadEndsToString deadEnds =
@@ -64,4 +65,5 @@ go code = Parser.run (succeed identity |= parse |. end) code |> Result.mapError 
           let scope2 = Dict.diff scope startingScope in
           let parts = List.map(\(k, a)->k ++ ": " ++ typeToString a) (Dict.toList scope2) in
           let cps = CPS.toCPS annotAst in
-          String.join ", " parts ++ " -- " ++ Debug.toString cps))
+          let refinedCPS = Refine.refineAST (Dict.empty) cps in
+          String.join ", " parts ++ " -- " ++ Debug.toString refinedCPS))

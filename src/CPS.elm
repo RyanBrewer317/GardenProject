@@ -7,7 +7,7 @@ The main divergences from the book are my much more restricted use of CPS contro
 and how much information I've chosen to keep in the CPS AST from the source code.
 Eventually I hope to do refinement-type-checking on the CPS AST, if I can get the mapping to the source code right
 -}
-module CPS exposing (toCPS)
+module CPS exposing (toCPS, Value(..), CExpr(..), AccessPath(..))
 import Typecheck exposing (Type)
 import Lang exposing (..)
 import NameGen exposing (NameGen)
@@ -21,6 +21,7 @@ type Value = Var String Type
            | Float Float
            | String String
 
+typeOf : Value -> Type
 typeOf val = case val of
     Var _ t -> t
     Bool _ -> TBool
@@ -113,17 +114,26 @@ convertExpr ftv loc cont = case loc.value of
             _ -> oneResult()
     AnnotFunc {args, block, typ} -> ftv |> 
             NameGen.withTwoFresh (\ftv2 var1 var2->
-                let (ftv3, c) = Var var2 typ |> cont ftv2 in 
-                let (ftv4, bod) = convertExpr ftv3 block (\ftv5 z->(ftv5, Call (Var var1) [z] |> locmap loc)) in 
+                let (inputType, outputType) = (case typ of
+                        TFunc t u -> (t, u)
+                        _ -> (TBool, TBool)
+                        ) in
+                let (ftv3, c) = Var var2 (addArg inputType outputType (TFunc outputType outputType)) |> cont ftv2 in 
+                let (ftv4, bod) = convertExpr ftv3 block (\ftv5 z->(ftv5, Call (Var var1 (TFunc outputType outputType)) [z] |> locmap loc)) in 
                 (ftv4, Funcs [(var2, (List.map Tuple.first args++[var1]), bod)] c |> locmap loc)
             )
-    AnnotCall {func, args} -> ftv |>
+    AnnotCall {func, args, typ} -> ftv |>
             NameGen.withTwoFresh (\ftv2 var1 var2->
-                let (ftv3, c) = Var var2 |> cont ftv2 in
-                let (ftv4, foo) = convertExpr ftv3 func (\ftv5 f-> convertExpr ftv5 args (\ftv6 e->(ftv6, Call f [e, Var var1] |> locmap loc))) in
+                let (ftv3, c) = Var var2 typ |> cont ftv2 in
+                let (ftv4, foo) = convertExpr ftv3 func (\ftv5 f-> convertExpr ftv5 args (\ftv6 e->(ftv6, Call f [e, Var var1 (TFunc typ typ)] |> locmap loc))) in
                 (ftv4, Funcs [(var1, [var2], c)] foo |> locmap loc)
             )
-    _ -> cont ftv (Var "this shouldn't happen...")
+    _ -> cont ftv (Var "this shouldn't happen..." TBool)
+
+addArg inputType outputType argType = case inputType of
+    TTuple [] -> TFunc argType outputType
+    TTuple ts -> TFunc (TTuple (ts++[argType])) outputType
+    _ -> TFunc (TTuple ([inputType, argType])) outputType
 
 convertTupleHelper : NameGen -> List (Located Annot) -> (List Value -> (NameGen, Located CExpr)) -> (NameGen, Located CExpr)
 convertTupleHelper ftv vals cont =
@@ -133,4 +143,4 @@ convertTupleHelper ftv vals cont =
             [] -> cont (List.reverse vars)) in
     g ftv vals []
 
-toCPS annotAST = List.map (\stmt->convertStmt NameGen.init stmt (\ftv val->(ftv, Call val [] |> locmap stmt))) annotAST
+toCPS annotAST = List.map (\stmt->convertStmt NameGen.init stmt (\ftv val->(ftv, Call val [] |> locmap stmt)) |> Tuple.second) annotAST
