@@ -66,6 +66,6 @@ go code = Parser.run (succeed identity |= parse |. end) code |> Result.mapError 
           let scope2 = Dict.diff scope startingScope in
           let parts = List.map(\(k, a)->k ++ ": " ++ typeToString a) (Dict.toList scope2) in
           let cps = CPS.toCPS annotAst in
-          Refine.refineAST (Dict.empty) cps |> Result.map (\refinedCPS->
-          let cps2 = AssemblyTypes.convertRefinedAST refinedCPS in
-          String.join ", " parts ++ " -- " ++ Debug.toString cps2) |> Result.withDefault "refinement type error"))
+          -- Refine.refineAST (Dict.empty) cps |> Result.map (\refinedCPS->
+          let cps2 = AssemblyTypes.convertCPSAST cps in
+          String.join ", " parts ++ " -- " ++ Debug.toString cps2))

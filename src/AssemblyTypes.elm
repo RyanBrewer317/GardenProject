@@ -44,3 +44,19 @@ convertRefinedCExpr rcexpr = case rcexpr of
     RPrimOp op args mbvar branches -> PrimOp op (List.map convertRefinedValue args) mbvar (List.map (\loc->convertRefinedCExpr loc.value) branches)
 
 convertRefinedAST ast = List.map (\loc->convertRefinedCExpr loc.value) ast
+
+convertValue : CPS.Value -> Value
+convertValue val = case val of
+    CPS.Var n _ -> Var n
+    CPS.Bool i -> Int32 i
+    CPS.Int i -> Int64 i
+    CPS.Float f -> Float64 f
+    CPS.String s -> String s
+
+convertCExpr cexpr = case cexpr of
+    CPS.Tuple exprs var cont -> Tuple (List.map (\(a, b)->(convertValue a, convertCPSAccessPath b)) exprs) var (convertCExpr cont.value)
+    CPS.Call a b -> Call (convertValue a) (List.map convertValue b)
+    CPS.Funcs funcs dom -> Funcs (List.map (\(a, b, c)->(a, b, convertCExpr c.value)) funcs) (convertCExpr dom.value)
+    CPS.PrimOp op args mbvar branches -> PrimOp op (List.map convertValue args) mbvar (List.map (\loc->convertCExpr loc.value) branches)
+
+convertCPSAST ast = List.map (\loc->convertCExpr loc.value) ast
