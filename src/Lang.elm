@@ -19,11 +19,10 @@ type Expr = Ident String
           | Infix (Located Expr) String (Located Expr)
           | ArrayLit (List (Located Expr))
           | Index (Located Expr) (Located Expr)
-
-type Stmt = Declaration String (Located Expr)
+          | LetBlock (Located (String, Located Expr)) (Located Expr)
 
 keywords : Set.Set String
-keywords = Set.fromList ["true", "false", "if", "else", "then"]
+keywords = Set.fromList ["true", "false", "if", "else", "in"]
 
 type alias Located a =
   { start : (Int, Int)
@@ -37,6 +36,10 @@ located parser =
     |= getPosition
     |= parser
     |= getPosition
+
+locmap : Located a -> b -> Located b
+locmap loc constraint = case loc of
+    {start, end} -> {start=start, value=constraint, end=end}
 
 parseIdentString : Parser String
 parseIdentString = variable
@@ -92,7 +95,7 @@ parseFunction = succeed Function
              |= sequence
                 { start = "\\"
                 , separator = ","
-                , end = "->"
+                , end = "."
                 , spaces = ws
                 , item = parseIdentString
                 , trailing = Forbidden
@@ -251,14 +254,33 @@ expression = succeed identity
           |. ws
           |> andThen compoundExpr
 
-parseDeclaration : Parser (Located Stmt)
-parseDeclaration = succeed Declaration
-                |= parseIdentString
+parseLetBlock : Parser (Located Expr)
+parseLetBlock = succeed (\(vars, e)->linesToNestedLet vars e)
+                |. symbol "{"
                 |. ws
-                |. token "="
-                |. ws
-                |= expression
-                |> located
+                |= loop [] (\lines->
+                    oneOf 
+                        [ succeed identity
+                            |. keyword "in"
+                            |= expression
+                            |> map (\expr->(List.reverse lines, expr))
+                            |> map Done
+                        , succeed Tuple.pair
+                            |= parseIdentString
+                            |. ws
+                            |. symbol "="
+                            |= expression
+                            |. symbol ";"
+                            |> located
+                            |> map (\line->line::lines)
+                            |> map Loop
+                        ])
+                |. symbol "}"
+
+linesToNestedLet : List (Located (String, Located Expr)) -> Located Expr -> Located Expr
+linesToNestedLet lines val = case lines of
+    line::rest -> LetBlock line (linesToNestedLet rest val) |> locmap {start=line.end, value=(), end=val.end}
+    [] -> val
 
 -- parseTypeDef : Parser (Located Statement)
 -- parseTypeDef = succeed TypeDefinition
@@ -313,12 +335,23 @@ parseDeclaration = succeed Declaration
 --          |. ws
 --          |> andThen compoundType
 
-parse : Parser (List (Located Stmt))
-parse = sequence
-        { start = ""
-        , item = oneOf [parseDeclaration{-, parseTypeDef-}]
-        , separator = ";"
-        , end = ""
-        , spaces = ws
-        , trailing = Mandatory
-        }
+parse : Parser (Located Expr)
+parse    = succeed (\(vars, e)->linesToNestedLet vars e)
+        |= loop [] (\lines->
+            oneOf 
+                [ succeed (\expr->Done (List.reverse lines, expr))
+                    |. keyword "main"
+                    |. ws
+                    |. symbol "="
+                    |= expression
+                    |. symbol ";"
+                , succeed Tuple.pair
+                    |= parseIdentString
+                    |. ws
+                    |. symbol "="
+                    |= expression
+                    |. symbol ";"
+                    |> located
+                    |> map (\line->line::lines)
+                    |> map Loop
+                ])

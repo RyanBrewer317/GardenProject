@@ -22,8 +22,7 @@ type Annot = AnnotPrim   {val : Expr, typ : Type}
            | AnnotPrefix {op : String, right : Located Annot, typ : Type}
            | AnnotInfix  {left : Located Annot, op : String, right : Located Annot, typ : Type}
            | AnnotIndex  {coll : Located Annot, idx : Located Annot, typ : Type}
-
-type AnnotStmt = AnnotDecl String (Located Annot)
+           | AnnotLet    {name : String, val : Located Annot, expr : Located Annot, typ : Type}
 
 -- evalTypeLit : TypeLit -> Type
 -- evalTypeLit t = case t of
@@ -54,7 +53,7 @@ typeToStringHelper t = case t of
                             [] -> ("ba"::showvars, sub tvar (TVar "ba") typ, [])
                             x::xs -> (x :: showvars, sub tvar (TVar x) typ, xs)
                         _->("" :: showvars, typ, supply)) ([], u, String.toList "abcdefghijklmnopqrstuvwxyz" |> List.map String.fromChar) vars in
-            "<" ++ String.join ", " (List.reverse <| showVars) ++ ">" ++ typeToStringHelper showType
+            typeToStringHelper showType
 
 typeToString : Type -> String
 typeToString t = case t of
@@ -75,10 +74,6 @@ argsToType : List (String, Type) -> Type
 argsToType args = case args of
     [(_, t)] -> t
     _ -> TTuple <| List.map Tuple.second args
-
-locmap : Located a -> b -> Located b
-locmap loc constraint = case loc of
-    {start, end} -> {start=start, value=constraint, end=end}
 
 typecheckExpr : Scope -> NameGen -> Located Expr -> Result String (NameGen, Located Annot, List (Located Constraint))
 typecheckExpr scope gen loc = 
@@ -208,7 +203,18 @@ typecheckExpr scope gen loc =
                 )
             ) gen3 
             |> (\(gen4, (annIndex, consts))->(gen4, annIndex, consts))))
-        _ -> Err ""
+        Tuple exprs ->
+            List.foldr (\expr res->res|>Result.andThen(\(genx, annots, consts)->typecheckExpr scope genx expr|>Result.map(\(genx2,annot,exprConsts)->(genx2,annot::annots,exprConsts++consts)))) (Ok <| (gen, [], [])) exprs
+            |> Result.map (\(gen2,annotLocs,consts)->(gen2,AnnotTuple {vals=annotLocs,typ=TTuple <| List.map (\annotLoc->typeOf annotLoc.value) annotLocs}|>locmap loc,consts))
+        LetBlock line expr -> 
+            case line.value of
+                (n, e) -> 
+                    letTypeOf scope gen e
+                    |> Result.andThen (\(scope2, gen2, annotE)->
+                        typecheckExpr (Dict.insert n (typeOf annotE.value) scope2) gen2 expr
+                        |> Result.map (\(gen3, annotExpr, exprConsts)->
+                            (gen3, AnnotLet {name=n, val=annotE, expr=annotExpr, typ=typeOf annotExpr.value} |> locmap loc, exprConsts)))
+        -- _ -> Err ""
 
 typeOf : Annot -> Type
 typeOf a = case a of
@@ -221,30 +227,33 @@ typeOf a = case a of
     AnnotPrefix {typ} -> typ
     AnnotInfix  {typ} -> typ
     AnnotIndex  {typ} -> typ
+    AnnotLet    {typ} -> typ
 
 updateType : (Type -> Type) -> Located Annot -> Located Annot
 updateType f loc = case loc.value of
-    AnnotPrim   {val, typ} -> {loc | value=AnnotPrim {val=val, typ=f typ}}
-    AnnotFunc   {args, block, typ} -> {loc | value=AnnotFunc {args=args, block=block, typ=f typ}}
-    AnnotCall   {func, args, typ} -> {loc | value=AnnotCall {func=func, args=args, typ=f typ}}
-    AnnotIf     {cond, cons, alt, typ} -> {loc | value=AnnotIf {cond=cond, cons=cons, alt=alt, typ=f typ}}
-    AnnotTuple  {vals, typ} -> {loc | value=AnnotTuple {vals=vals, typ=f typ}}
-    AnnotArray  {vals, typ} -> {loc | value=AnnotArray {vals=vals, typ=f typ}}
-    AnnotPrefix {op, right, typ} -> {loc | value=AnnotPrefix {op=op, right=right, typ=f typ}}
-    AnnotInfix  {left, op, right, typ} -> {loc | value=AnnotInfix {left=left, op=op, right=right, typ=f typ}}
-    AnnotIndex  {coll, idx, typ} -> {loc | value=AnnotIndex {coll=coll, idx=idx, typ=f typ}}
+    AnnotPrim   ({typ} as a) -> {loc | value=AnnotPrim   {a | typ=f typ}}
+    AnnotFunc   ({typ} as a) -> {loc | value=AnnotFunc   {a | typ=f typ}}
+    AnnotCall   ({typ} as a) -> {loc | value=AnnotCall   {a | typ=f typ}}
+    AnnotIf     ({typ} as a) -> {loc | value=AnnotIf     {a | typ=f typ}}
+    AnnotTuple  ({typ} as a) -> {loc | value=AnnotTuple  {a | typ=f typ}}
+    AnnotArray  ({typ} as a) -> {loc | value=AnnotArray  {a | typ=f typ}}
+    AnnotPrefix ({typ} as a) -> {loc | value=AnnotPrefix {a | typ=f typ}}
+    AnnotInfix  ({typ} as a) -> {loc | value=AnnotInfix  {a | typ=f typ}}
+    AnnotIndex  ({typ} as a) -> {loc | value=AnnotIndex  {a | typ=f typ}}
+    AnnotLet    ({typ} as a) -> {loc | value=AnnotLet    {a | typ=f typ}}
 
 updateTypes : (Type -> Type) -> Located Annot -> Located Annot
 updateTypes f loc = case loc.value of
-    AnnotPrim   {val, typ} -> {loc | value=AnnotPrim {val=val, typ=f typ}}
-    AnnotFunc   {args, block, typ} -> {loc | value=AnnotFunc {args=args, block=updateTypes f block, typ=f typ}}
-    AnnotCall   {func, args, typ} -> {loc | value=AnnotCall {func=updateTypes f func, args=updateTypes f args, typ=f typ}}
-    AnnotIf     {cond, cons, alt, typ} -> {loc | value=AnnotIf {cond=updateTypes f cond, cons=updateTypes f cons, alt=updateTypes f alt, typ=f typ}}
-    AnnotTuple  {vals, typ} -> {loc | value=AnnotTuple {vals=List.map (updateTypes f) vals, typ=f typ}}
-    AnnotArray  {vals, typ} -> {loc | value=AnnotArray {vals=List.map (updateTypes f) vals, typ=f typ}}
-    AnnotPrefix {op, right, typ} -> {loc | value=AnnotPrefix {op=op, right=updateTypes f right, typ=f typ}}
-    AnnotInfix  {left, op, right, typ} -> {loc | value=AnnotInfix {left=updateTypes f left, op=op, right=updateTypes f right, typ=f typ}}
-    AnnotIndex  {coll, idx, typ} -> {loc | value=AnnotIndex {coll=updateTypes f coll, idx=updateTypes f idx, typ=f typ}}
+    AnnotPrim   ({typ} as a)                    -> {loc | value=AnnotPrim   {a | typ=f typ}}
+    AnnotFunc   ({block, typ} as a)             -> {loc | value=AnnotFunc   {a | block=updateTypes f block, typ=f typ}}
+    AnnotCall   ({func, args, typ} as a)        -> {loc | value=AnnotCall   {a | func=updateTypes f func, args=updateTypes f args, typ=f typ}}
+    AnnotIf     ({cond, cons, alt, typ} as a)   -> {loc | value=AnnotIf     {a | cond=updateTypes f cond, cons=updateTypes f cons, alt=updateTypes f alt, typ=f typ}}
+    AnnotTuple  ({vals, typ} as a)              -> {loc | value=AnnotTuple  {a | vals=List.map (updateTypes f) vals, typ=f typ}}
+    AnnotArray  ({vals, typ} as a)              -> {loc | value=AnnotArray  {a | vals=List.map (updateTypes f) vals, typ=f typ}}
+    AnnotPrefix ({right, typ} as a)             -> {loc | value=AnnotPrefix {a | right=updateTypes f right, typ=f typ}}
+    AnnotInfix  ({left, right, typ} as a)       -> {loc | value=AnnotInfix  {a | left=updateTypes f left, right=updateTypes f right, typ=f typ}}
+    AnnotIndex  ({coll, idx, typ} as a)         -> {loc | value=AnnotIndex  {a | coll=updateTypes f coll, idx=updateTypes f idx, typ=f typ}}
+    AnnotLet    ({expr, val, typ} as a)         -> {loc | value=AnnotLet    {a | expr=updateTypes f expr, val=updateTypes f val, typ=f typ}}
 
 -- typeOf : Scope -> NameGen (Located Expr) -> Result String (NameGen Type)
 -- typeOf scope genexpr = typecheckExpr scope genexpr |> Result.andThen (\(gent, constraints)->
@@ -422,17 +431,12 @@ preGeneralize scope constraints annotLoc =
 occursInScope : Scope -> String -> Bool
 occursInScope scope var = Dict.toList scope |> List.any (\(_, t)->occurs (TVar var) t)
 
-typecheckStmt : Scope -> NameGen -> Stmt -> Result String (Scope, NameGen, AnnotStmt)
-typecheckStmt scope gen stmt = case stmt of
-    Declaration n locx  -> letTypeOf scope gen locx |> Result.map (\(s, gen2, a)->(s, gen2, AnnotDecl n a))
-
-typecheck : Scope -> NameGen -> List (Located Stmt) -> List (Located AnnotStmt) -> Result String (Scope, NameGen, List (Located AnnotStmt))
-typecheck scope gen ast sofar = case ast of
+typecheckLines : Scope -> NameGen -> List (Located (String, Located Expr)) -> List (Located (String, Located Annot)) -> Result String (Scope, NameGen, List (Located (String, Located Annot)))
+typecheckLines scope gen ast sofar = case ast of
     [] -> Ok (scope, gen, List.reverse sofar)
-    stmt::rest -> typecheckStmt scope gen stmt.value |> Result.andThen (\(scope2, gen2, annot)->
-        case stmt.value of
-            Declaration n _ -> 
-                case annot of
-                    AnnotDecl _ a -> typecheck (Dict.insert n (typeOf a.value) scope2) gen2 rest ((locmap stmt annot) :: sofar)
-            --_ -> typecheck scope rest
-        )
+    stmt::rest -> 
+        letTypeOf scope gen (Tuple.second stmt.value) |> Result.andThen (\(scope2, gen2, annotLoc)->
+        typecheckLines (Dict.insert (Tuple.first stmt.value) (typeOf annotLoc.value) scope2) gen2 rest (locmap stmt (Tuple.first stmt.value, annotLoc) :: sofar))
+
+typecheck : Scope -> NameGen -> Located Expr -> Result String (Scope, NameGen, Located Annot)
+typecheck scope gen ast = letTypeOf scope gen ast

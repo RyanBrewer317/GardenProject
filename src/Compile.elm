@@ -5,8 +5,7 @@ import Typecheck exposing (..)
 import NameGen
 import Parser exposing (..)
 import CPS
-import Refine
-import AssemblyTypes
+import Optimize
 
 deadEndsToString : List DeadEnd -> String
 deadEndsToString deadEnds =
@@ -62,10 +61,15 @@ startingScope = Dict.fromList
 
 go : String -> Result String String
 go code = Parser.run (succeed identity |= parse |. end) code |> Result.mapError deadEndsToString |> Result.andThen (\ast->
-          typecheck startingScope NameGen.init ast []        |> Result.map (\(scope, _, annotAst)->
+          typecheck startingScope NameGen.init ast           |> Result.map (\(scope, _, annotAstLoc)->
           let scope2 = Dict.diff scope startingScope in
           let parts = List.map(\(k, a)->k ++ ": " ++ typeToString a) (Dict.toList scope2) in
-          let cps = CPS.toCPS annotAst in
+          let (_, (_, cps)) = CPS.toCPS annotAstLoc in
           -- Refine.refineAST (Dict.empty) cps |> Result.map (\refinedCPS->
-          let cps2 = AssemblyTypes.convertCPSAST cps in
-          String.join ", " parts ++ " -- " ++ Debug.toString cps2))
+          let facts = Optimize.findFacts (Dict.empty) cps in
+          let cps2 = Optimize.phase1 facts cps in
+          let facts2 = Optimize.findFacts (Dict.empty) cps2 in
+          let cps3 = Optimize.phase1 facts2 cps2 in
+          let facts3 = Optimize.findFacts (Dict.empty) cps3 in
+          let cps4 = Optimize.phase1 facts3 cps3 in
+          String.join ", " parts ++ " -- " ++ Debug.toString cps4))
